@@ -1721,3 +1721,33 @@ async def test_mapping_property_interface(database_url):
         list_result = await database.fetch_all(query=query)
         assert list_result[0]._mapping["text"] == "example1"
         assert list_result[0]._mapping["completed"] is True
+
+
+@pytest.mark.parametrize("database_url", DATABASE_URLS)
+@async_adapter
+async def test_transaction_commit_failure_cleanup(database_url):
+    """
+    Ensure that when transaction commit fails, the transaction stack and connection counter
+    are properly cleaned up and rolled back.
+    """
+    async with Database(database_url) as database:
+        async with database.connection() as connection:
+            try:
+                async with connection.transaction() as transaction:
+                    transaction._transaction.commit = AsyncMock(
+                        side_effect=RuntimeError("Commit failed")
+                    )
+            except RuntimeError:
+                pass
+
+            assert len(connection._transaction_stack) == 0
+            assert connection._connection_counter == 1
+
+            # Subsequent transaction should succeed without error
+            async with connection.transaction():
+                query = notes.insert().values(text="example_after_fail", completed=True)
+                await connection.execute(query)
+
+            query = notes.select()
+            results = await connection.fetch_all(query=query)
+            assert any(r["text"] == "example_after_fail" for r in results)

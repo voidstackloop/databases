@@ -451,29 +451,44 @@ class Transaction:
         async with self._connection._transaction_lock:
             is_root = not self._connection._transaction_stack
             await self._connection.__aenter__()
-            await self._transaction.start(
-                is_root=is_root, extra_options=self._extra_options
-            )
+            try:
+                await self._transaction.start(
+                    is_root=is_root, extra_options=self._extra_options
+                )
+            except BaseException:
+                await self._connection.__aexit__()
+                self._transaction = None
+                raise
             self._connection._transaction_stack.append(self)
         return self
 
     async def commit(self) -> None:
         async with self._connection._transaction_lock:
             assert self._connection._transaction_stack[-1] is self
-            self._connection._transaction_stack.pop()
             assert self._transaction is not None
-            await self._transaction.commit()
-            await self._connection.__aexit__()
-            self._transaction = None
+            try:
+                await self._transaction.commit()
+            except BaseException:
+                try:
+                    await self._transaction.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                self._connection._transaction_stack.pop()
+                await self._connection.__aexit__()
+                self._transaction = None
 
     async def rollback(self) -> None:
         async with self._connection._transaction_lock:
             assert self._connection._transaction_stack[-1] is self
-            self._connection._transaction_stack.pop()
             assert self._transaction is not None
-            await self._transaction.rollback()
-            await self._connection.__aexit__()
-            self._transaction = None
+            try:
+                await self._transaction.rollback()
+            finally:
+                self._connection._transaction_stack.pop()
+                await self._connection.__aexit__()
+                self._transaction = None
 
 
 class _EmptyNetloc(str):
